@@ -1,8 +1,8 @@
 /* WIRING:
 Digital Pin 2: Left encoder
 Digital Pin 3: Right encoder
-Motor shield M1: Left motor
-Motor shield M2: Right motor
+Motor shield M2: Left motor
+Motor shield M3: Right motor
 */
 
 #include <Wire.h>
@@ -186,8 +186,8 @@ Adafruit_DCMotor* leftMotor;
 Adafruit_DCMotor* rightMotor;
 void setupMotors() {
   Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
-  leftMotor = AFMS.getMotor(1);
-  rightMotor = AFMS.getMotor(2);
+  leftMotor = AFMS.getMotor(2);
+  rightMotor = AFMS.getMotor(3);
   AFMS.begin();
 }
 
