@@ -15,13 +15,14 @@ Digital Pin 8: LED
 // Constants
 const float TICKS_PER_CM = 3.5; // TICKS
 const float TRACK_WIDTH = 13;
-const float VEL = 20; // Forwards speed proportional
-const float AVEL = 100; // Angular speed proportional
-const float Kp = 0.5;
-const float Kd = 0.1;
-const float TOTAL_TIME = 25; // SECOND
+const float VEL = 2.5; // Forwards speed proportional (SECOND/CM * this = MOTOR POWER)
+const float AVEL = 150; // Angular speed proportional (SECOND/RADIAN * this = MOTOR POWER)
+const float MAX_AVEL = 0.3/PI; // Max rotation speed SECOND/RADIANS
+const float Kp = 0.05;
+const float Kd = 0.025;
+const float Hp = 0.1; // Angular proportional while going forwards
+const float TOTAL_TIME = 12; // SECOND
 float START_HEADING = 0; // RADIANS
-const float END_HEADING = PI/2; // RADIANS
 
 // Localization
 float heading = 0; // RADIANS
@@ -33,18 +34,13 @@ float time = 0; // SECONDS
 typedef struct Point {
   float x;
   float y;
-  float time;
 } Point;
 Point path[] = {
-  {0, 0, 0},
-  {50, 0},
-  {50, 50},
-  {0, 50},
   {0, 0},
-  {50, 0},
-  {50, 50},
-  {0, 50},
-  {0, 0},
+  {150, 0},
+  {150, 50},
+  {-25, 50},
+  {-25, 0},
 };
 
 /* Main code */
@@ -76,57 +72,126 @@ void loop() {
 /* Main code */
 
 /* Path following */
+const int PATH_LEN = 2*sizeof(path)/sizeof(Point) - 1;
+typedef struct RamsetePoint {
+  float x;
+  float y;
+  float heading;
+  float time;
+  float linvel;
+  float angvel;
+} RamsetePoint;
+RamsetePoint ramsetePath[PATH_LEN];
+
+void printPoint(struct RamsetePoint pt) {
+  Serial.print("x: ");
+  Serial.print(pt.x);
+  Serial.print(", y: ");
+  Serial.print(pt.y);
+  Serial.print(", heading: ");
+  Serial.print(pt.heading * RAD_TO_DEG);
+  Serial.print(", time: ");
+  Serial.print(pt.time);
+  Serial.print(", linvel: ");
+  Serial.print(pt.linvel);
+  Serial.print(", angvel: ");
+  Serial.println(pt.angvel);
+}
+
 float ptdist(Point pt1, Point pt2) {
   return sqrt((pt1.y - pt2.y)*(pt1.y - pt2.y) + (pt1.x - pt2.x)*(pt1.x - pt2.x));
 }
 int pathlen() {
   return sizeof(path)/sizeof(Point);
 }
+// Heading from a to b
+float calcH(Point a, Point b) {
+  float ret = atan2(b.y - a.y, b.x - a.x);
+  if (ret < 0) {
+    ret += 2*PI;
+  }
+  return ret;
+}
+
 void setupRamsete() {
   // Plan time out for all the points
   float dist = 0;
+  float ang = 0;
+  float targetHeading = START_HEADING;
   for (int i = 0; i < pathlen()-1; i++) {
     dist += ptdist(path[i], path[i+1]);
+    float newTargetHeading = calcH(path[i], path[i+1]);
+    ang += abs(newTargetHeading - targetHeading);
+    targetHeading = newTargetHeading;
   }
-  float prog = 0;
+  
+  // Calculate speeds
+  float angTime = ang*MAX_AVEL;
+  float vel = (TOTAL_TIME - angTime) / dist; // seconds/cm
+
+  // Calculate path
+  ramsetePath[0] = {path[0].x, path[0].y, calcH(path[0], path[1]), 0, 1.0/MAX_AVEL * AVEL};
+  int ramseteI = 1;
+  float time = 0;
   for (int i = 1; i < pathlen(); i++) {
-    prog += ptdist(path[i-1], path[i]);
-    path[i].time = (prog/dist)*TOTAL_TIME;
+    float heading = calcH(path[i-1], path[i]);
+    time += abs(heading - ramsetePath[ramseteI-1].heading) * MAX_AVEL;
+    ramsetePath[ramseteI] = {path[i-1].x, path[i-1].y, heading, time, VEL * 1.0/vel, 0};
+    ramseteI++;
+    time += ptdist(path[i], path[i-1]) * vel;
+
+    float sgn = 1;
+    if (heading - ramsetePath[ramseteI-1].heading < 0) {
+      sgn = -1;
+    }
+    ramsetePath[ramseteI] = {path[i].x, path[i].y, heading, time, 0, 1.0/MAX_AVEL * AVEL * sgn};
+    ramseteI++;
+  }
+
+  // Print path
+  Serial.println("GENERATED PATH:");
+  for (int i = 0; i < PATH_LEN; i++) {
+    printPoint(ramsetePath[i]);
   }
 }
 
 int pathPoint = 0;
 void loopRamsete() {
   // Get expected point
-  if (pathPoint < pathlen()-1 && path[pathPoint+1].time < time) {
+  while (pathPoint < PATH_LEN-1 && ramsetePath[pathPoint+1].time < time) {
     pathPoint++;
   }
-  Point goalPoint;
-  float targetHeading;
-  if (pathPoint >= pathlen()-1) {
-    goalPoint = path[pathlen()-1];
-    targetHeading = END_HEADING;
+  RamsetePoint goalPoint;
+  if (pathPoint >= PATH_LEN-1) {
+    goalPoint = ramsetePath[PATH_LEN-1];
+    if (ptdist({x, y}, {goalPoint.x, goalPoint.y}) < 10) {
+      done = true;
+      digitalWrite(8, LOW);
+      stopMotors();
+      return;
+    }
   } else {
-    float dt = path[pathPoint+1].time - path[pathPoint].time;
-    float pathprog = (time - path[pathPoint].time)/dt; // 0-1 proportion of path done
-    float x = path[pathPoint].x + (path[pathPoint+1].x - path[pathPoint].x)*pathprog;
-    float y = path[pathPoint].y + (path[pathPoint+1].y - path[pathPoint].y)*pathprog;
-    targetHeading = atan2(path[pathPoint+1].y - path[pathPoint].y, path[pathPoint+1].x - path[pathPoint].x);
-    goalPoint = {x, y, 0};
+    float dt = ramsetePath[pathPoint+1].time - ramsetePath[pathPoint].time;
+    float pathprog = (time - ramsetePath[pathPoint].time)/dt; // 0-1 proportion of path done
+    float x = ramsetePath[pathPoint].x + (ramsetePath[pathPoint+1].x - ramsetePath[pathPoint].x)*pathprog;
+    float y = ramsetePath[pathPoint].y + (ramsetePath[pathPoint+1].y - ramsetePath[pathPoint].y)*pathprog;
+    float h = ramsetePath[pathPoint].heading + (ramsetePath[pathPoint+1].heading - ramsetePath[pathPoint].heading)*pathprog;
+    goalPoint = {x, y, h, ramsetePath[pathPoint].time, ramsetePath[pathPoint].linvel, ramsetePath[pathPoint].angvel};
   }
-  /*Serial.print("x: ");
+  Serial.print("x: ");
   Serial.print(goalPoint.x);
   Serial.print(", y: ");
   Serial.print(goalPoint.y);
   Serial.print(", heading: ");
-  Serial.println(targetHeading*RAD_TO_DEG);*/
+  Serial.println(goalPoint.heading*RAD_TO_DEG);
 
   // Calculate error
   float rawerrx = goalPoint.x - x;
   float rawerry = goalPoint.y - y;
   float errx = rawerrx * cos(heading) + rawerry * sin(heading);
   float erry = rawerrx * -1 * sin(heading) + rawerry * cos(heading);
-  float errh = targetHeading - heading;
+  float errh = goalPoint.heading - heading;
+  
   if (errh < -PI) {
     errh += 2*PI;
   }
@@ -136,30 +201,36 @@ void loopRamsete() {
   if (errh == 0) {
     errh = 0.0001; // Fix divide by 0 errors
   }
-  /*if (pathPoint >= pathlen()-1) {
-    LINEARVEL = Kp*errx;
-    ANGVEL = Kp*errh;
-  }*/
-
-  // Calculate velocities
-  float LINEARVEL = VEL * errx;
-  float ANGVEL = AVEL * errh;
+  if (goalPoint.linvel == 0) {
+    goalPoint.linvel = VEL*errx;
+  }
+  if (goalPoint.angvel == 0) {
+    goalPoint.angvel = Hp*errh;
+  }
+  if (pathPoint >= PATH_LEN-1) {
+    goalPoint.linvel = VEL*errx;
+    goalPoint.angvel = AVEL*errh;
+  }
 
   // Calculate ramsete (https://wiki.purduesigbots.com/software/control-algorithms/ramsete)
-  float k = 2*Kd*sqrt(ANGVEL*ANGVEL + Kp*LINEARVEL*LINEARVEL);
-  float v = LINEARVEL*cos(errh) + k*errx;
-  float w = ANGVEL + k*errh + (Kp*LINEARVEL*sin(errh)*erry)/errh;
+  float k = 2*Kd*sqrt(goalPoint.angvel*goalPoint.angvel + Kp*goalPoint.linvel*goalPoint.linvel);
+  float v = goalPoint.linvel*cos(errh) + k*errx;
+  float w = goalPoint.angvel + k*errh + (Kp*goalPoint.linvel*sin(errh)*erry)/errh;
 
-  Serial.print("ex: ");
+  /*Serial.print("ex:");
   Serial.print(errx);
-  Serial.print(", ey: ");
+  Serial.print(",ey:");
   Serial.print(erry);
-  Serial.print(", eheading: ");
+  Serial.print(",eheading:");
   Serial.print(errh*RAD_TO_DEG);
-  Serial.print(", v: ");
+  Serial.print(",linvel:");
+  Serial.print(goalPoint.linvel);
+  Serial.print(",angvel:");
+  Serial.print(goalPoint.angvel);
+  Serial.print(",v:");
   Serial.print(v);
-  Serial.print(", w: ");
-  Serial.println(w);
+  Serial.print(",w:");
+  Serial.println(w);*/
 
   // Command power
   powerMotors(v - w, v + w);
@@ -249,8 +320,8 @@ void setupMotors() {
 
 // Powers from 0 to 255
 void powerMotors(int lPower, int rPower) {
-  leftMotor->setSpeed(abs(lPower));
-  rightMotor->setSpeed(abs(rPower));
+  leftMotor->setSpeed(abs(lPower)+60);
+  rightMotor->setSpeed(abs(rPower)+60);
   if (lPower < 0) {
     leftMotor->run(BACKWARD);
     lForwards = false;
