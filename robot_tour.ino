@@ -1,10 +1,16 @@
 /* WIRING:
-Digital Pin 2: Left encoder
+Digital Pin 2: Left encoder A
+Digital Pin 4: Left encoder B
+Digital Pin 3: Right encoder A
+Digital Pin 5: Right encoder B
 Digital Pin 3: Right encoder
 Motor shield M2: Left motor
 Motor shield M3: Right motor
 Digital Pin 7: Button
 Digital Pin 8: LED
+Digital Pin 8: Reset
+
+SDA/SCL: IMU
 */
 
 #include <Wire.h>
@@ -13,15 +19,14 @@ Digital Pin 8: LED
 #include <Adafruit_BNO055.h>
 
 // Constants
-const float TICKS_PER_CM = 3.5; // TICKS
-const float TRACK_WIDTH = 13;
-const float VEL = 2.5; // Forwards speed proportional (SECOND/CM * this = MOTOR POWER)
-const float AVEL = 150; // Angular speed proportional (SECOND/RADIAN * this = MOTOR POWER)
-const float MAX_AVEL = 0.3/PI; // Max rotation speed SECOND/RADIANS
-const float Kp = 0.05;
-const float Kd = 0.025;
-const float Hp = 0.1; // Angular proportional while going forwards
-const float TOTAL_TIME = 12; // SECOND
+const float TICKS_PER_CM = 11; // TICKS
+const float TRACK_WIDTH = 7; // CM
+const float MAX_AVEL = 1/PI; // Max rotation speed SECOND/RADIANS
+const float Kp = 0.01;
+const float Kd = 0.01;
+const float Hp = 0.0001; // Error proportional for non-moving component
+const float ENDp = 0.1; // Error proportional for when done
+const float TOTAL_TIME = 27; // SECOND
 float START_HEADING = 0; // RADIANS
 
 // Localization
@@ -37,15 +42,16 @@ typedef struct Point {
 } Point;
 Point path[] = {
   {0, 0},
-  {150, 0},
-  {150, 50},
-  {-25, 50},
-  {-25, 0},
+  {1000, 0},
+  /*{300, 50},
+  {0, 50},
+  {0, 0},*/
 };
 
 /* Main code */
 void setup() {
   Serial.begin(9600);
+  delay(100);
 
   setupMotors();
   setupLocalization();
@@ -55,19 +61,18 @@ void setup() {
 
 bool done = false;
 void loop() {
+  if (digitalRead(9) == LOW) {
+    stopMotors();
+    digitalWrite(8, LOW);
+    done = true;
+  }
+
   if (!done) {
     loopLocalization();
     loopRamsete();
   }
-  
-  /*Serial.print("x:");
-  Serial.print(x);
-  Serial.print(",y:");
-  Serial.print(y);
-  Serial.print(",heading:");
-  Serial.println(heading * RAD_TO_DEG);*/
 
-  delay(100);
+  delay(20);
 }
 /* Main code */
 
@@ -130,13 +135,13 @@ void setupRamsete() {
   float vel = (TOTAL_TIME - angTime) / dist; // seconds/cm
 
   // Calculate path
-  ramsetePath[0] = {path[0].x, path[0].y, calcH(path[0], path[1]), 0, 1.0/MAX_AVEL * AVEL};
+  ramsetePath[0] = {path[0].x, path[0].y, calcH(path[0], path[1]), 0, 1.0/MAX_AVEL};
   int ramseteI = 1;
   float time = 0;
   for (int i = 1; i < pathlen(); i++) {
     float heading = calcH(path[i-1], path[i]);
     time += abs(heading - ramsetePath[ramseteI-1].heading) * MAX_AVEL;
-    ramsetePath[ramseteI] = {path[i-1].x, path[i-1].y, heading, time, VEL * 1.0/vel, 0};
+    ramsetePath[ramseteI] = {path[i-1].x, path[i-1].y, heading, time, 1.0/vel, 0};
     ramseteI++;
     time += ptdist(path[i], path[i-1]) * vel;
 
@@ -144,7 +149,7 @@ void setupRamsete() {
     if (heading - ramsetePath[ramseteI-1].heading < 0) {
       sgn = -1;
     }
-    ramsetePath[ramseteI] = {path[i].x, path[i].y, heading, time, 0, 1.0/MAX_AVEL * AVEL * sgn};
+    ramsetePath[ramseteI] = {path[i].x, path[i].y, heading, time, 0, 1.0/MAX_AVEL * sgn};
     ramseteI++;
   }
 
@@ -164,7 +169,7 @@ void loopRamsete() {
   RamsetePoint goalPoint;
   if (pathPoint >= PATH_LEN-1) {
     goalPoint = ramsetePath[PATH_LEN-1];
-    if (ptdist({x, y}, {goalPoint.x, goalPoint.y}) < 10) {
+    if (ptdist({x, y}, {goalPoint.x, goalPoint.y}) < 5) {
       done = true;
       digitalWrite(8, LOW);
       stopMotors();
@@ -178,12 +183,12 @@ void loopRamsete() {
     float h = ramsetePath[pathPoint].heading + (ramsetePath[pathPoint+1].heading - ramsetePath[pathPoint].heading)*pathprog;
     goalPoint = {x, y, h, ramsetePath[pathPoint].time, ramsetePath[pathPoint].linvel, ramsetePath[pathPoint].angvel};
   }
-  Serial.print("x: ");
+  /*Serial.print("x: ");
   Serial.print(goalPoint.x);
   Serial.print(", y: ");
   Serial.print(goalPoint.y);
   Serial.print(", heading: ");
-  Serial.println(goalPoint.heading*RAD_TO_DEG);
+  Serial.println(goalPoint.heading*RAD_TO_DEG);*/
 
   // Calculate error
   float rawerrx = goalPoint.x - x;
@@ -202,22 +207,26 @@ void loopRamsete() {
     errh = 0.0001; // Fix divide by 0 errors
   }
   if (goalPoint.linvel == 0) {
-    goalPoint.linvel = VEL*errx;
+    goalPoint.linvel = Hp*errx;
   }
   if (goalPoint.angvel == 0) {
     goalPoint.angvel = Hp*errh;
   }
   if (pathPoint >= PATH_LEN-1) {
-    goalPoint.linvel = VEL*errx;
-    goalPoint.angvel = AVEL*errh;
+    goalPoint.linvel = ENDp*errx;
+    goalPoint.angvel = ENDp*errh;
   }
 
   // Calculate ramsete (https://wiki.purduesigbots.com/software/control-algorithms/ramsete)
   float k = 2*Kd*sqrt(goalPoint.angvel*goalPoint.angvel + Kp*goalPoint.linvel*goalPoint.linvel);
   float v = goalPoint.linvel*cos(errh) + k*errx;
-  float w = goalPoint.angvel + k*errh + (Kp*goalPoint.linvel*sin(errh)*erry)/errh;
+  float w = goalPoint.angvel + k*(errh*RAD_TO_DEG) + (Kp*goalPoint.linvel*sin(errh)*erry)/errh;
 
-  /*Serial.print("ex:");
+  // Convert to motor powers
+  float motorv = linvelToPower(v);
+  float motorw = angvelToPower(w);
+
+  Serial.print("ex:");
   Serial.print(errx);
   Serial.print(",ey:");
   Serial.print(erry);
@@ -227,19 +236,32 @@ void loopRamsete() {
   Serial.print(goalPoint.linvel);
   Serial.print(",angvel:");
   Serial.print(goalPoint.angvel);
+  Serial.print(",motorv:");
+  Serial.print(motorv);
+  Serial.print(",motorw:");
+  Serial.print(motorw);
   Serial.print(",v:");
   Serial.print(v);
   Serial.print(",w:");
-  Serial.println(w);*/
+  Serial.println(w);
+
+  /*Serial.print("x:");
+  Serial.print(x);
+  Serial.print(",y:");
+  Serial.print(y);
+  Serial.print(",heading:");
+  Serial.println(heading * RAD_TO_DEG);*/
 
   // Command power
-  powerMotors(v - w, v + w);
+  // Linear power from velocity
+
+  powerMotors(motorv + motorw, motorv - motorw);
 }
 /* Path following */
 
 /* Localization code */
-int lTicks = 0;
-int rTicks = 0;
+volatile int lTicks = 0;
+volatile int rTicks = 0;
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
 void setupLocalization() {
   attachInterrupt(0, incrementL, RISING);
@@ -248,21 +270,21 @@ void setupLocalization() {
   bno.setExtCrystalUse(true);
 }
 
-bool lForwards = true;
 void incrementL() {
-  if (lForwards) {
+  bool dir = digitalRead(4);
+  if (dir) {
     lTicks++;
   } else {
     lTicks--;
   }
 }
 
-bool rForwards = true;
 void incrementR() {
-  if (rForwards) {
-    rTicks++;
-  } else {
+  bool dir = digitalRead(5);
+  if (dir) {
     rTicks--;
+  } else {
+    rTicks++;
   }
 }
 
@@ -313,28 +335,41 @@ Adafruit_DCMotor* leftMotor;
 Adafruit_DCMotor* rightMotor;
 void setupMotors() {
   Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
-  leftMotor = AFMS.getMotor(4);
-  rightMotor = AFMS.getMotor(3);
+  leftMotor = AFMS.getMotor(3);
+  rightMotor = AFMS.getMotor(4);
   AFMS.begin();
+}
+
+// Linvel in cm/s
+float linvelToPower(float linvel) {
+  float val = abs(linvel)/1.7;
+  if (val < 0) {
+    val = 0;
+  }
+  return linvel < 0 ? val*-1 : val;
+}
+// Angvel in rad/s
+float angvelToPower(float angvel) {
+  float val = TRACK_WIDTH*abs(angvel)/1.7;
+  if (val < 0) {
+    val = 0;
+  }
+  return angvel < 0 ? val*-1 : val;
 }
 
 // Powers from 0 to 255
 void powerMotors(int lPower, int rPower) {
-  leftMotor->setSpeed(abs(lPower)+60);
-  rightMotor->setSpeed(abs(rPower)+60);
+  leftMotor->setSpeed(abs(lPower)+51);
+  rightMotor->setSpeed(abs(rPower)+51);
   if (lPower < 0) {
     leftMotor->run(BACKWARD);
-    lForwards = false;
   } else {
     leftMotor->run(FORWARD);
-    lForwards = true;
   }
   if (rPower < 0) {
     rightMotor->run(BACKWARD);
-    rForwards = false;
   } else {
     rightMotor->run(FORWARD);
-    rForwards = true;
   }
 }
 
@@ -349,6 +384,7 @@ void stopMotors() {
 /* Button input code */
 void waitForStart() {
   pinMode(7, INPUT_PULLUP);
+  pinMode(9, INPUT_PULLUP);
   pinMode(8, OUTPUT);
   digitalWrite(8, HIGH);
   bool pressed = false;
@@ -361,7 +397,7 @@ void waitForStart() {
     if (buttonDown == HIGH && pressed) { // Start when released
       break;
     }
-    delay(200);
+    delay(50);
   }
   resetLocalization();
   digitalWrite(8, HIGH);
