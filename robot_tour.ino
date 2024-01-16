@@ -211,6 +211,8 @@ void loopPid() {
     if (pathPoint < pathlen()-1) {
       pathPoint++;
       iV = 0; // Stop integral windup
+      stopMotors();
+      delay(100);
     } else {
       done = true;
       digitalWrite(8, LOW);
