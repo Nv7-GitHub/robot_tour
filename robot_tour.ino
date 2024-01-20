@@ -8,7 +8,7 @@ Motor shield M2: Left motor
 Motor shield M3: Right motor
 Digital Pin 7: Button
 Digital Pin 8: LED
-Digital Pin 8: Reset
+Digital Pin 9: Reset
 
 SDA/SCL: IMU
 */
@@ -19,35 +19,40 @@ SDA/SCL: IMU
 #include <Adafruit_BNO055.h>
 
 // Constants
-const float TICKS_PER_CM = 11; // TICKS
-const float TRACK_WIDTH = 7; // CM
-const float SPEED = 140;
-const float P = 75;
+const float TICKS_PER_CM = 11.6; // TICKS
+const float TRACK_WIDTH = 16; // CM
+const float SPEED = 60;
+const float P = 70;
 const float I = 0;
 const float D = 20;
 
-const float DEADBAND = 60; // Deadband of motors
-const float MAXANG = 140; // Max w value
-
-float START_HEADING = 0; // RADIANS
-
-// Localization
-float heading = 0; // RADIANS
-float x = 0; // CM
-float y = 0; // CM
+const float MAXANG = 40; // Max w value
+const float DEADBAND = 20;
 
 // Path
+float START_HEADING = PI/2; // RADIANS
 typedef struct Point {
   float x;
   float y;
 } Point;
 Point path[] = {
-  {0, 0},
-  {75, 0},
-  {75, 75},
-  {0, 75},
-  {0, 0},
+  {-25, -100},
+  {25, -75},
+  {25, -25},
+  {70, -25}, // FIRST GATE
+  {70, 16},
+  {25, 16},
+  {25, 50}, // SECOND GATE
+  {22, 12},
+  {-80, 20},
+  {-80, 45},
+  {-30, 45}
 };
+
+// Localization
+float heading = 0; // RADIANS
+float x = path[0].x; // CM
+float y = path[0].y; // CM
 
 /* Main code */
 void setup() {
@@ -139,10 +144,10 @@ void loopLocalization() {
 
   // X and Y change
   float z = ((2*l)/dHeading + TRACK_WIDTH)*sin(dHeading/2);
-  Serial.print("l:");
+  /*Serial.print("l:");
   Serial.print(l);
   Serial.print(",dHeading:");
-  Serial.println(dHeading);
+  Serial.println(dHeading);*/
   float dx = z*cos(heading);
   float dy = z*sin(heading);
 
@@ -167,6 +172,21 @@ void setupMotors() {
 
 // Powers from 0 to 255
 void powerMotors(int lPower, int rPower) {
+  if (abs(lPower) > 255) {
+    if (lPower > 0) {
+      lPower = 255;
+    } else {
+      lPower = -255;
+    }
+  }
+  if (abs(rPower) > 255) {
+    if (rPower > 0) {
+      rPower = 255;
+    } else {
+      rPower = -255;
+    }
+  }
+
   leftMotor->setSpeed(abs(lPower));
   rightMotor->setSpeed(abs(rPower));
   if (lPower < 0) {
@@ -205,17 +225,20 @@ float calcH(Point a, Point b) {
 int pathPoint = 0;
 float iV = 0;
 float pErr = 0; // Prev err
+bool turninplace = false;
 void loopPid() {
   Point goal = path[pathPoint];
-  if (abs(goal.x - x) < 5 && abs(goal.y - y) < 5) { // Check if next point
+  int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 4; // Allow room to turn for early points
+  if (abs(goal.x - x) < maxerr && abs(goal.y - y) < maxerr) { // Check if next point
     if (pathPoint < pathlen()-1) {
       pathPoint++;
       iV = 0; // Stop integral windup
-      stopMotors();
-      delay(100);
+      return;
     } else {
       done = true;
       digitalWrite(8, LOW);
+      powerMotors(0, 0);
+      delay(300);
       stopMotors();
       return;
     }
@@ -227,10 +250,20 @@ void loopPid() {
   } else if (err < -1 * PI) {
     err += 2*PI;
   }
+
+  // Turn in place
+  if (abs(err) > PI/1.5) { // Around 135 deg
+    turninplace = true;
+  } else if (abs(err) < PI/20) {
+    turninplace = false; // Stop turning when <9deg of error if turning place
+  }
+
+  // PID
   iV += err * dT;
   float dV = (err - pErr)/dT;
   pErr = err;
-  float w = err * P + iV * I + dV * D;
+  float w = err * P + iV * I + dV * (turninplace ? 0 : D);
+
   if (abs(w) > MAXANG) { // Limit max speed
     if (w < 0) {
       w = -MAXANG;
@@ -239,7 +272,7 @@ void loopPid() {
     }
   }
 
-  /*Serial.print("heading:");
+  Serial.print("heading:");
   Serial.print(heading);
   Serial.print(",atan:");
   Serial.print(atan2((double)(goal.y - y), (double)(goal.x - x)));
@@ -250,10 +283,10 @@ void loopPid() {
   Serial.print(",w:");
   Serial.print(w);
   Serial.print(",err:");
-  Serial.println(err);*/
+  Serial.println(err);
 
-  if (abs(err) > PI/20) { // Turn in place until <9deg of error
-    powerMotors(w + DEADBAND, -1 * w - DEADBAND); // 50s help it get out of deadband
+  if (turninplace) { // Turn in place until <90deg of error
+    powerMotors(w + (w > 0 ? DEADBAND : -DEADBAND), -w - (w > 0 ? DEADBAND : -DEADBAND));
   } else {
     powerMotors(SPEED + w, SPEED - w);
   }
