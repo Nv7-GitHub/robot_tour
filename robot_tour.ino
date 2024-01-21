@@ -4,8 +4,8 @@ Digital Pin 4: Left encoder B
 Digital Pin 3: Right encoder A
 Digital Pin 5: Right encoder B
 Digital Pin 3: Right encoder
-Motor shield M2: Left motor
-Motor shield M3: Right motor
+Motor shield M3: Left motor
+Motor shield M4: Right motor
 Digital Pin 7: Button
 Digital Pin 8: LED
 Digital Pin 9: Reset
@@ -30,23 +30,32 @@ const float MAXANG = 40; // Max w value
 const float DEADBAND = 20;
 
 // Path
-float START_HEADING = PI/2; // RADIANS
+const float START_HEADING = PI; // RADIANS
 typedef struct Point {
   float x;
   float y;
 } Point;
 Point path[] = {
-  {-25, -100},
+  {100, -75},
   {25, -75},
   {25, -25},
-  {70, -25}, // FIRST GATE
-  {70, 16},
-  {25, 16},
-  {25, 50}, // SECOND GATE
-  {22, 12},
-  {-80, 20},
-  {-80, 45},
-  {-30, 45}
+  {75, -25},
+  // GO THROUGH GATE 1
+  {75, 75},
+  {25, 75},
+  {25, 25},
+  {-25, 25},
+  {-25, -25},
+  {-75, -25},
+  {-75, -75},
+  // GO THROUGH GATE 2
+  {-74, -25},
+  {-25, -25},
+  {-25, 25},
+  {-75, 25},
+  // GO THROUGH GATE 3
+  {-75, 75},
+  {-25, 75}
 };
 
 // Localization
@@ -56,26 +65,27 @@ float y = path[0].y; // CM
 
 /* Main code */
 void setup() {
+  pinMode(7, INPUT_PULLUP);
+  pinMode(9, INPUT_PULLUP);
+  pinMode(8, OUTPUT);
+
   Serial.begin(9600);
-  delay(100);
 
   setupMotors();
   setupLocalization();
   waitForStart();
 }
 
-bool done = false;
 void loop() {
   if (digitalRead(9) == LOW) {
     stopMotors();
     digitalWrite(8, LOW);
-    done = true;
+    waitForStart();
+    return;
   }
 
-  if (!done) {
-    loopLocalization();
-    loopPid();
-  }
+  loopLocalization();
+  loopPid();
 
   delay(20);
 }
@@ -111,16 +121,18 @@ void incrementR() {
 }
 
 unsigned long lastTime;
+float startHeading;
+float prevHeading = heading;
 void resetLocalization() {
   imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
   float offset = 2*PI - euler.x() * DEG_TO_RAD;
-  START_HEADING -= offset;
+  startHeading = START_HEADING - offset;
+  prevHeading = START_HEADING;
   lTicks = 0;
   rTicks = 0;
   lastTime = millis();
 }
 
-float prevHeading = START_HEADING;
 float dT;
 void loopLocalization() {
   float l = ((float)lTicks)/(TICKS_PER_CM);
@@ -135,7 +147,7 @@ void loopLocalization() {
   heading += dHeading;*/
 
   imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER); // IMU-based orientation
-  heading = 2*PI - euler.x() * DEG_TO_RAD + START_HEADING;
+  heading = 2*PI - euler.x() * DEG_TO_RAD + startHeading;
   float dHeading = heading - prevHeading;
   prevHeading = heading;
   if (dHeading == 0) {
@@ -235,7 +247,9 @@ void loopPid() {
       iV = 0; // Stop integral windup
       return;
     } else {
-      done = true;
+      waitForStart();
+      return;
+
       digitalWrite(8, LOW);
       powerMotors(0, 0);
       delay(300);
@@ -286,18 +300,22 @@ void loopPid() {
   Serial.println(err);
 
   if (turninplace) { // Turn in place until <90deg of error
-    powerMotors(w + (w > 0 ? DEADBAND : -DEADBAND), -w - (w > 0 ? DEADBAND : -DEADBAND));
+    powerMotors(-w - (w > 0 ? DEADBAND : -DEADBAND), w + (w > 0 ? DEADBAND : -DEADBAND));
   } else {
-    powerMotors(SPEED + w, SPEED - w);
+    powerMotors(SPEED - w, SPEED + w);
   }
 }
 /* Path following */
 
 /* Button input code */
 void waitForStart() {
-  pinMode(7, INPUT_PULLUP);
-  pinMode(9, INPUT_PULLUP);
-  pinMode(8, OUTPUT);
+  digitalWrite(8, LOW);
+  delay(100);
+
+  x = path[0].x;
+  y = path[0].y;
+  heading = START_HEADING;
+
   digitalWrite(8, HIGH);
   bool pressed = false;
   while (true) {
