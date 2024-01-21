@@ -1,10 +1,16 @@
 /* WIRING:
-Digital Pin 2: Left encoder
+Digital Pin 2: Left encoder A
+Digital Pin 4: Left encoder B
+Digital Pin 3: Right encoder A
+Digital Pin 5: Right encoder B
 Digital Pin 3: Right encoder
-Motor shield M2: Left motor
-Motor shield M3: Right motor
+Motor shield M3: Left motor
+Motor shield M4: Right motor
 Digital Pin 7: Button
 Digital Pin 8: LED
+Digital Pin 9: Reset
+
+SDA/SCL: IMU
 */
 
 #include <Wire.h>
@@ -13,221 +19,81 @@ Digital Pin 8: LED
 #include <Adafruit_BNO055.h>
 
 // Constants
-const float TICKS_PER_CM = 3.5; // TICKS
-const float TRACK_WIDTH = 13; // CM
-const float LOOKAHEAD = 20; // CM
-const float VEL = 127; // SPEED (out of 255)
-float START_HEADING = PI/2;
+const float TICKS_PER_CM = 11.6; // TICKS
+const float TRACK_WIDTH = 16; // CM
+const float SPEED = 60;
+const float P = 70;
+const float I = 0;
+const float D = 20;
 
-// Localization
-float heading = 0; // RADIANS
-float x = -25; // CM
-float y = -100; // CM
+const float MAXANG = 40; // Max w value
+const float DEADBAND = 20;
 
 // Path
+const float START_HEADING = PI; // RADIANS
 typedef struct Point {
   float x;
   float y;
 } Point;
-const Point path[] = {
-  {-25, -100},
-  {-25, -75},
-  {-75, -75},
-  {-75, -25},
+Point path[] = {
+  {100, -75},
+  {25, -75},
+  {25, -25},
+  {75, -25},
+  // GO THROUGH GATE 1
+  {75, 75},
+  {25, 75},
+  {25, 25},
+  {-25, 25},
   {-25, -25},
-  {-25, 15},
-  {25, 60},
-  {40, 0},
-  {60, -25},
+  {-75, -25},
+  {-75, -75},
+  // GO THROUGH GATE 2
+  {-74, -25},
+  {-25, -25},
+  {-25, 25},
+  {-75, 25},
+  // GO THROUGH GATE 3
+  {-75, 75},
+  {-25, 75}
 };
+
+// Localization
+float heading = 0; // RADIANS
+float x = path[0].x; // CM
+float y = path[0].y; // CM
 
 /* Main code */
 void setup() {
+  pinMode(7, INPUT_PULLUP);
+  pinMode(9, INPUT_PULLUP);
+  pinMode(8, OUTPUT);
+
+  Serial.begin(9600);
+
   setupMotors();
   setupLocalization();
-  Serial.begin(9600);
   waitForStart();
 }
 
-bool done = false;
 void loop() {
-  if (!done) {
-    loopLocalization();
-    loopPursuit();
+  if (digitalRead(9) == LOW) {
+    stopMotors();
+    digitalWrite(8, LOW);
+    waitForStart();
+    return;
   }
-  
-  /*Serial.print("x:");
-  Serial.print(x);
-  Serial.print(",y:");
-  Serial.print(y);
-  Serial.print(",heading:");
-  Serial.println(heading * RAD_TO_DEG);*/
+
+  loopLocalization();
+  loopPid();
 
   delay(20);
 }
 /* Main code */
 
-/* Pure pursuit */
-// https://wiki.purduesigbots.com/software/control-algorithms/basic-pure-pursuit#putting-everything-together
-float ptdist(struct Point pt1, struct Point pt2) {
-  return sqrt((pt2.x - pt1.x)*(pt2.x - pt1.x) + (pt2.y - pt1.y)*(pt2.y - pt1.y));
-}
-
-float sgn(float num) {
-  if (num >= 0) {
-    return 1;
-  }
-  return 0;
-}
-
-const float EPSILON = 0.01;
-
-Point goalPt;
-int lastFound = 0;
-float loopPursuit() {
-  bool foundIntersect = false;
-  int start = lastFound;
-  for (int i = start; i < sizeof(path)/sizeof(Point)-1; i++) {
-    // Intersect circle
-    float x1 = path[i].x - x;
-    float y1 = path[i].y - y;
-    float x2 = path[i+1].x - x;
-    float y2 = path[i+1].y - y;
-    float dx = x2 - x1;
-    float dy = y2 - y1;
-    float dr = sqrt(dx*dx + dy*dy);
-    float D = x1*y2 - x2*y1;
-    float discriminant = (LOOKAHEAD*LOOKAHEAD) * (dr*dr) - D*D;
-
-    if (discriminant >= 0) {
-      float sol_x1 = (D * dy + sgn(dy) * dx * sqrt(discriminant)) / (dr*dr);
-      float sol_x2 = (D * dy - sgn(dy) * dx * sqrt(discriminant)) / (dr*dr);
-      float sol_y1 = (-1 * D * dx + abs(dy) * sqrt(discriminant)) / (dr*dr);
-      float sol_y2 = (-1 * D * dx - abs(dy) * sqrt(discriminant)) / (dr*dr);
-      Point sol_pt1 = {sol_x1 + x, sol_y1 + y};
-      Point sol_pt2 = {sol_x2 + x, sol_y2 + y};
-
-      // End of circle intersection
-
-      // Test if solutions are in right range
-      float minX = min(path[i].x, path[i+1].x) - EPSILON;
-      float minY = min(path[i].y, path[i+1].y) - EPSILON;
-      float maxX = max(path[i].x, path[i+1].x) + EPSILON;
-      float maxY = max(path[i].y, path[i+1].y) + EPSILON;
-      bool pt1Found = ((minX <= sol_pt1.x && sol_pt1.x <= maxX) && (minY <= sol_pt1.y && sol_pt1.y <= maxY));
-      bool pt2Found = ((minX <= sol_pt2.x && sol_pt2.x <= maxX) && (minY <= sol_pt2.y && sol_pt2.y <= maxY));
-      if (pt1Found || pt2Found) {
-        foundIntersect = true;
-        
-        Point foundPt;
-        // If both, get best
-        if (pt1Found && pt2Found) {
-          if (ptdist(sol_pt1, path[i+1]) < ptdist(sol_pt2, path[i+1])) {
-            foundPt = sol_pt1;
-          } else {
-            foundPt = sol_pt2;
-          }
-        } else if (pt1Found) {
-          foundPt = sol_pt1;
-        } else if (pt2Found) {
-          foundPt = sol_pt2;
-        }
-
-        // Only exit if solution is closer to next than current
-        if (ptdist(foundPt, path[i+1]) < ptdist({x, y}, path[i+1])) {
-          goalPt = foundPt;
-          /*Serial.println("GOAL");
-          Serial.println(ptdist(goalPt, path[i+1]));
-          Serial.println(ptdist({x, y}, path[i+1]));
-          Serial.println(goalPt.x);
-          Serial.println(goalPt.y);
-          Serial.println("GOAL");*/
-          lastFound = i;
-          break;
-        } else {
-          // In case for some reason the robot cannot find intersection in the next path segment, but we also don't want it to go backward
-          foundIntersect = false;
-          /*Serial.println("LOST"); // Potentially deviated from path, but stay with the last found goal point
-          Serial.println(goalPt.x);
-          Serial.println(goalPt.y);
-          Serial.println("LOST");*/
-          //goalPt = path[lastFound]; // Potentially deviated from path
-        }
-      } else {
-        foundIntersect = false;
-        goalPt = path[lastFound]; // Potentially deviated from path
-        /*Serial.println("GOALMISS");
-        Serial.println(goalPt.x);
-        Serial.println(goalPt.y);
-        Serial.println("GOALMISS");*/
-      }
-    } else {
-      //Serial.println("NO CIRCLE FOUND");
-    }
-  }
-
-  /*Serial.println("TURNVEL");
-  Serial.println(lastFound);*/
-  // Calculate angle to goal point
-  float ang = atan2(goalPt.y - y, goalPt.x - x);
-  if (ang < 0) {
-    ang += 2*PI;
-  }
-  //Serial.println(ang * RAD_TO_DEG);
-  
-  // Find minimum angle
-  float turnErr = ang - heading;
-  //Serial.println(turnErr * RAD_TO_DEG);
-  if (turnErr > PI) {
-    turnErr -= 2*PI;
-  } else if (turnErr < -PI) {
-    turnErr += 2*PI;
-  }
-  if (turnErr > PI/2) {
-    turnErr = PI/2;
-  } else if (turnErr < -PI/2) {
-    turnErr = -PI/2;
-  }
-  //Serial.println(turnErr * RAD_TO_DEG);
-
-  // Calculate power for l and r
-  float turnVel = (TRACK_WIDTH * sin(turnErr))/LOOKAHEAD * VEL;
-  if (turnVel > VEL) {
-    turnVel = VEL;
-  }
-  if (turnVel < -VEL) {
-    turnVel = -VEL;
-  }
-  if (lastFound >= sizeof(path)/sizeof(Point)-2) {
-    float dist = ptdist(path[lastFound+1], {x, y})/LOOKAHEAD;
-    if (dist > 1) {
-      dist = 1;
-    }
-    /*Serial.println("ENDING");
-    Serial.println(ptdist(path[lastFound+1], {x, y}));
-    Serial.println(dist);
-    Serial.println(turnVel);*/
-    if (dist < 0.25) {
-      stopMotors(); // Close to the end, done
-      done = true;
-      digitalWrite(8, LOW);
-      //Serial.println("DONE");
-    } else {
-     //Serial.println("APPROACHING");
-      powerMotors((VEL - turnVel) * dist, (VEL + turnVel) * dist); // Slow down as approaching the end
-    }
-  } else {
-    /*Serial.println("NORMAL");
-    Serial.println(turnVel);*/
-    powerMotors(VEL - turnVel, VEL + turnVel);
-  }
-}
-
-/* Pure pursuit */
-
 /* Localization code */
-int lTicks = 0;
-int rTicks = 0;
+volatile int lTicks = 0;
+volatile int rTicks = 0;
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
 void setupLocalization() {
   attachInterrupt(0, incrementL, RISING);
@@ -237,40 +103,63 @@ void setupLocalization() {
 }
 
 void incrementL() {
-  lTicks++;
+  bool dir = digitalRead(4);
+  if (dir) {
+    lTicks++;
+  } else {
+    lTicks--;
+  }
 }
 
 void incrementR() {
-  rTicks++;
+  bool dir = digitalRead(5);
+  if (dir) {
+    rTicks--;
+  } else {
+    rTicks++;
+  }
 }
 
+unsigned long lastTime;
+float startHeading;
+float prevHeading = heading;
 void resetLocalization() {
   imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
   float offset = 2*PI - euler.x() * DEG_TO_RAD;
-  START_HEADING -= offset;
+  startHeading = START_HEADING - offset;
+  prevHeading = START_HEADING;
   lTicks = 0;
   rTicks = 0;
+  lastTime = millis();
 }
 
-float prevHeading = START_HEADING;
+float dT;
 void loopLocalization() {
   float l = ((float)lTicks)/(TICKS_PER_CM);
   float r = ((float)rTicks)/(TICKS_PER_CM);
+
+  unsigned long time = millis();
+  dT = (float)(time - lastTime)/1000;
+  lastTime = time;
 
   // Heading
   /*float dHeading = (r - l)/TRACK_WIDTH; // Encoder-based orientation
   heading += dHeading;*/
 
   imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER); // IMU-based orientation
-  heading = 2*PI - euler.x() * DEG_TO_RAD + START_HEADING;
+  heading = 2*PI - euler.x() * DEG_TO_RAD + startHeading;
   float dHeading = heading - prevHeading;
   prevHeading = heading;
   if (dHeading == 0) {
-    dHeading = 0.0000001;
+    dHeading = (millis() % 2 == 0 ? 0.00001 : -0.00001);
   }
 
   // X and Y change
   float z = ((2*l)/dHeading + TRACK_WIDTH)*sin(dHeading/2);
+  /*Serial.print("l:");
+  Serial.print(l);
+  Serial.print(",dHeading:");
+  Serial.println(dHeading);*/
   float dx = z*cos(heading);
   float dy = z*sin(heading);
 
@@ -288,29 +177,40 @@ Adafruit_DCMotor* leftMotor;
 Adafruit_DCMotor* rightMotor;
 void setupMotors() {
   Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
-  leftMotor = AFMS.getMotor(4);
-  rightMotor = AFMS.getMotor(3);
+  leftMotor = AFMS.getMotor(3);
+  rightMotor = AFMS.getMotor(4);
   AFMS.begin();
 }
 
 // Powers from 0 to 255
 void powerMotors(int lPower, int rPower) {
+  if (abs(lPower) > 255) {
+    if (lPower > 0) {
+      lPower = 255;
+    } else {
+      lPower = -255;
+    }
+  }
+  if (abs(rPower) > 255) {
+    if (rPower > 0) {
+      rPower = 255;
+    } else {
+      rPower = -255;
+    }
+  }
+
+  leftMotor->setSpeed(abs(lPower));
+  rightMotor->setSpeed(abs(rPower));
   if (lPower < 0) {
-    lPower = 0;
+    leftMotor->run(BACKWARD);
+  } else {
+    leftMotor->run(FORWARD);
   }
   if (rPower < 0) {
-    rPower = 0;
+    rightMotor->run(BACKWARD);
+  } else {
+    rightMotor->run(FORWARD);
   }
-  if (lPower > 255) {
-    lPower = 255;
-  }
-  if (rPower > 255) {
-    rPower = 255;
-  }
-  leftMotor->setSpeed(lPower);
-  leftMotor->run(FORWARD);
-  rightMotor->setSpeed(rPower);
-  rightMotor->run(FORWARD);
 }
 
 void stopMotors() {
@@ -321,10 +221,101 @@ void stopMotors() {
 }
 /* Motor control code */
 
+/* Path following */
+int pathlen() {
+  return sizeof(path)/sizeof(Point);
+}
+// Heading from a to b
+float calcH(Point a, Point b) {
+  float ret = atan2(b.y - a.y, b.x - a.x);
+  if (ret < 0) {
+    ret += 2*PI;
+  }
+  return ret;
+}
+
+int pathPoint = 0;
+float iV = 0;
+float pErr = 0; // Prev err
+bool turninplace = false;
+void loopPid() {
+  Point goal = path[pathPoint];
+  int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 4; // Allow room to turn for early points
+  if (abs(goal.x - x) < maxerr && abs(goal.y - y) < maxerr) { // Check if next point
+    if (pathPoint < pathlen()-1) {
+      pathPoint++;
+      iV = 0; // Stop integral windup
+      return;
+    } else {
+      waitForStart();
+      return;
+
+      digitalWrite(8, LOW);
+      powerMotors(0, 0);
+      delay(300);
+      stopMotors();
+      return;
+    }
+  }
+
+  float err = atan2((double)(goal.y - y), (double)(goal.x - x)) - heading;
+  if (err > PI) {
+    err -= 2*PI;
+  } else if (err < -1 * PI) {
+    err += 2*PI;
+  }
+
+  // Turn in place
+  if (abs(err) > PI/1.5) { // Around 135 deg
+    turninplace = true;
+  } else if (abs(err) < PI/20) {
+    turninplace = false; // Stop turning when <9deg of error if turning place
+  }
+
+  // PID
+  iV += err * dT;
+  float dV = (err - pErr)/dT;
+  pErr = err;
+  float w = err * P + iV * I + dV * (turninplace ? 0 : D);
+
+  if (abs(w) > MAXANG) { // Limit max speed
+    if (w < 0) {
+      w = -MAXANG;
+    } else {
+      w = MAXANG;
+    }
+  }
+
+  Serial.print("heading:");
+  Serial.print(heading);
+  Serial.print(",atan:");
+  Serial.print(atan2((double)(goal.y - y), (double)(goal.x - x)));
+  Serial.print(",ey:");
+  Serial.print(goal.y - y);
+  Serial.print(",ex:");
+  Serial.print(goal.x - x);
+  Serial.print(",w:");
+  Serial.print(w);
+  Serial.print(",err:");
+  Serial.println(err);
+
+  if (turninplace) { // Turn in place until <90deg of error
+    powerMotors(-w - (w > 0 ? DEADBAND : -DEADBAND), w + (w > 0 ? DEADBAND : -DEADBAND));
+  } else {
+    powerMotors(SPEED - w, SPEED + w);
+  }
+}
+/* Path following */
+
 /* Button input code */
 void waitForStart() {
-  pinMode(7, INPUT_PULLUP);
-  pinMode(8, OUTPUT);
+  digitalWrite(8, LOW);
+  delay(100);
+
+  x = path[0].x;
+  y = path[0].y;
+  heading = START_HEADING;
+
   digitalWrite(8, HIGH);
   bool pressed = false;
   while (true) {
@@ -336,7 +327,7 @@ void waitForStart() {
     if (buttonDown == HIGH && pressed) { // Start when released
       break;
     }
-    delay(200);
+    delay(50);
   }
   resetLocalization();
   digitalWrite(8, HIGH);
