@@ -6,11 +6,12 @@ Digital Pin 5: Right encoder B
 Digital Pin 3: Right encoder
 Motor shield M3: Left motor
 Motor shield M4: Right motor
-Digital Pin 7: Button
-Digital Pin 8: Reset
-Digital Pin 9: LED
+Digital Pin 7 (Black): Button
+Digital Pin 8 (Red): Reset
+Digital Pin 9 (Black): LED
 
-SDA/SCL: IMU
+SDA (Yellow)/SCL (Green): IMU
++5V, GND, VIN jumper, VIN: Arduino power
 */
 
 #include <Wire.h>
@@ -19,20 +20,20 @@ SDA/SCL: IMU
 #include <Adafruit_BNO055.h>
 
 // Constants
-const float TICKS_PER_CM = 11; // TICKS
+const float TICKS_PER_CM = 12.6; // TICKS
 const float TRACK_WIDTH = 16; // CM
 const float SPEED = 45;
-const float P = 70;
+const float P = 35;
 const float I = 0;
-const float D = 20;
+const float D = 15;
 const float VEL_P = 0.1;
 
-const float MAXANG = 35; // Max w value
-const float DEADBAND = 20;
+const float MAXANG = 25; // Max w value
+const float DEADBAND = 30;
 
 // Path
 const float START_HEADING = PI; // RADIANS
-const float TIME = 30; // SECONDS
+const float TIME = 60; // SECONDS
 typedef struct Point {
   float x; // CM
   float y; // CM
@@ -57,7 +58,7 @@ Point path[] = {
   {-75, 25},
   // GO THROUGH GATE 3
   {-75, 75},
-  {-25, 75}
+  {-30, 75} // 5cm left because the dowel is 5cm ahead of center
 };
 float ptdist(Point a, Point b) {
   float ex = a.x - b.x;
@@ -155,7 +156,7 @@ void loopLocalization() {
   unsigned long currTime = millis();
   dT = (float)(currTime - lastTime)/1000;
   lastTime = currTime;
-  vel = ((l + r)/2)/dT;
+  vel = ((abs(l) + abs(r))/2)/dT;
 
   // Heading
   /*float dHeading = (r - l)/TRACK_WIDTH; // Encoder-based orientation
@@ -262,7 +263,7 @@ void setupPid() {
   for (int i = 1; i < pathlen(); i++) {
     dist += ptdist(path[i-1], path[i]);
   }
-  targetVel = dist / TIME;
+  targetVel = (dist - (pathlen()-1)*TRACK_WIDTH/3) / TIME; // Subtract some amount for each turn
   Serial.print("TARGET VEL: ");
   Serial.println(targetVel);
 }
@@ -317,9 +318,7 @@ void loopPid() {
 
   // Time control
   float terr = targetVel - vel;
-  if (!turninplace) {
-    velOffset += terr * VEL_P;
-  }
+  velOffset += terr * VEL_P;
 
   if (abs(w) > (MAXANG + velOffset)) { // Limit max speed
     if (w < 0) {
