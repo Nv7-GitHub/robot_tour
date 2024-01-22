@@ -6,11 +6,12 @@ Digital Pin 5: Right encoder B
 Digital Pin 3: Right encoder
 Motor shield M3: Left motor
 Motor shield M4: Right motor
-Digital Pin 7: Button
-Digital Pin 8: LED
-Digital Pin 9: Reset
+Digital Pin 7 (Black): Button
+Digital Pin 8 (Red): Reset
+Digital Pin 9 (Black): LED
 
-SDA/SCL: IMU
+SDA (Yellow)/SCL (Green): IMU
++5V, GND, VIN jumper, VIN: Arduino power
 */
 
 #include <Wire.h>
@@ -19,21 +20,23 @@ SDA/SCL: IMU
 #include <Adafruit_BNO055.h>
 
 // Constants
-const float TICKS_PER_CM = 11.6; // TICKS
+const float TICKS_PER_CM = 12.6; // TICKS
 const float TRACK_WIDTH = 16; // CM
-const float SPEED = 60;
-const float P = 70;
+const float SPEED = 45;
+const float P = 35;
 const float I = 0;
-const float D = 20;
+const float D = 15;
+const float VEL_P = 0.1;
 
-const float MAXANG = 40; // Max w value
-const float DEADBAND = 20;
+const float MAXANG = 25; // Max w value
+const float DEADBAND = 30;
 
 // Path
 const float START_HEADING = PI; // RADIANS
+const float TIME = 60; // SECONDS
 typedef struct Point {
-  float x;
-  float y;
+  float x; // CM
+  float y; // CM
 } Point;
 Point path[] = {
   {100, -75},
@@ -55,31 +58,38 @@ Point path[] = {
   {-75, 25},
   // GO THROUGH GATE 3
   {-75, 75},
-  {-25, 75}
+  {-30, 75} // 5cm left because the dowel is 5cm ahead of center
 };
+float ptdist(Point a, Point b) {
+  float ex = a.x - b.x;
+  float ey = a.y - b.y;
+  return sqrt(ex*ex + ey*ey);
+}
 
 // Localization
 float heading = 0; // RADIANS
 float x = path[0].x; // CM
 float y = path[0].y; // CM
+float vel = 0;
 
 /* Main code */
 void setup() {
   pinMode(7, INPUT_PULLUP);
-  pinMode(9, INPUT_PULLUP);
-  pinMode(8, OUTPUT);
+  pinMode(8, INPUT_PULLUP);
+  pinMode(9, OUTPUT);
 
   Serial.begin(9600);
 
   setupMotors();
   setupLocalization();
+  setupPid();
   waitForStart();
 }
 
 void loop() {
-  if (digitalRead(9) == LOW) {
+  if (digitalRead(8) == LOW) {
     stopMotors();
-    digitalWrite(8, LOW);
+    digitalWrite(9, LOW);
     waitForStart();
     return;
   }
@@ -124,6 +134,11 @@ unsigned long lastTime;
 float startHeading;
 float prevHeading = heading;
 void resetLocalization() {
+  x = path[0].x;
+  y = path[0].y;
+  heading = START_HEADING;
+  vel = 0;
+
   imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
   float offset = 2*PI - euler.x() * DEG_TO_RAD;
   startHeading = START_HEADING - offset;
@@ -138,16 +153,17 @@ void loopLocalization() {
   float l = ((float)lTicks)/(TICKS_PER_CM);
   float r = ((float)rTicks)/(TICKS_PER_CM);
 
-  unsigned long time = millis();
-  dT = (float)(time - lastTime)/1000;
-  lastTime = time;
+  unsigned long currTime = millis();
+  dT = (float)(currTime - lastTime)/1000;
+  lastTime = currTime;
+  vel = ((abs(l) + abs(r))/2)/dT;
 
   // Heading
   /*float dHeading = (r - l)/TRACK_WIDTH; // Encoder-based orientation
   heading += dHeading;*/
 
   imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER); // IMU-based orientation
-  heading = 2*PI - euler.x() * DEG_TO_RAD + startHeading;
+  heading = fmod(2*PI - euler.x() * DEG_TO_RAD + startHeading, 2*PI);
   float dHeading = heading - prevHeading;
   prevHeading = heading;
   if (dHeading == 0) {
@@ -238,6 +254,28 @@ int pathPoint = 0;
 float iV = 0;
 float pErr = 0; // Prev err
 bool turninplace = false;
+float velOffset = 0;
+float targetVel = 0;
+
+void setupPid() {
+  // Calculate distleft
+  float dist = 0;
+  for (int i = 1; i < pathlen(); i++) {
+    dist += ptdist(path[i-1], path[i]);
+  }
+  targetVel = (dist - (pathlen()-1)*TRACK_WIDTH/3) / TIME; // Subtract some amount for each turn
+  Serial.print("TARGET VEL: ");
+  Serial.println(targetVel);
+}
+
+void resetPid() {
+  pathPoint = 0;
+  iV = 0;
+  pErr = 0;
+  turninplace = false;
+  velOffset = 0;
+}
+
 void loopPid() {
   Point goal = path[pathPoint];
   int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 4; // Allow room to turn for early points
@@ -247,18 +285,18 @@ void loopPid() {
       iV = 0; // Stop integral windup
       return;
     } else {
-      waitForStart();
-      return;
-
-      digitalWrite(8, LOW);
+      digitalWrite(9, LOW);
       powerMotors(0, 0);
       delay(300);
       stopMotors();
+      waitForStart();
       return;
     }
   }
 
-  float err = atan2((double)(goal.y - y), (double)(goal.x - x)) - heading;
+  float ex = goal.x - x;
+  float ey = goal.y - y;
+  float err = atan2((double)(ey), (double)(ex)) - heading;
   if (err > PI) {
     err -= 2*PI;
   } else if (err < -1 * PI) {
@@ -278,11 +316,15 @@ void loopPid() {
   pErr = err;
   float w = err * P + iV * I + dV * (turninplace ? 0 : D);
 
-  if (abs(w) > MAXANG) { // Limit max speed
+  // Time control
+  float terr = targetVel - vel;
+  velOffset += terr * VEL_P;
+
+  if (abs(w) > (MAXANG + velOffset)) { // Limit max speed
     if (w < 0) {
-      w = -MAXANG;
+      w = -(MAXANG + velOffset);
     } else {
-      w = MAXANG;
+      w = (MAXANG + velOffset);
     }
   }
 
@@ -294,34 +336,40 @@ void loopPid() {
   Serial.print(goal.y - y);
   Serial.print(",ex:");
   Serial.print(goal.x - x);
+  Serial.print(",vel:");
+  Serial.print(vel);
   Serial.print(",w:");
   Serial.print(w);
+  Serial.print(",voffset:");
+  Serial.print(velOffset);
   Serial.print(",err:");
   Serial.println(err);
 
   if (turninplace) { // Turn in place until <90deg of error
     powerMotors(-w - (w > 0 ? DEADBAND : -DEADBAND), w + (w > 0 ? DEADBAND : -DEADBAND));
   } else {
-    powerMotors(SPEED - w, SPEED + w);
+    powerMotors(SPEED + velOffset - w, SPEED + velOffset + w);
   }
 }
 /* Path following */
 
 /* Button input code */
 void waitForStart() {
-  digitalWrite(8, LOW);
+  digitalWrite(9, LOW);
   delay(100);
 
-  x = path[0].x;
-  y = path[0].y;
-  heading = START_HEADING;
-
-  digitalWrite(8, HIGH);
   bool pressed = false;
+  int pwr = 64;
   while (true) {
+    analogWrite(9, pwr);
+    pwr += 4; 
+    if (pwr >= 128) {
+      pwr = 0;
+    }
+
     int buttonDown = digitalRead(7);
     if (buttonDown == LOW) {
-      digitalWrite(8, LOW);
+      digitalWrite(9, LOW);
       pressed = true;
     }
     if (buttonDown == HIGH && pressed) { // Start when released
@@ -330,6 +378,7 @@ void waitForStart() {
     delay(50);
   }
   resetLocalization();
-  digitalWrite(8, HIGH);
+  resetPid();
+  digitalWrite(9, HIGH);
 }
 /* Button input code */
