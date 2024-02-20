@@ -1,23 +1,32 @@
 /* WIRING:
-Digital Pin 2: Left encoder A
-Digital Pin 4: Left encoder B
-Digital Pin 3: Right encoder A
-Digital Pin 5: Right encoder B
+Digital Pin 2: Left encoder A (White)
+Digital Pin 4: Left encoder B (Yellow)
+Digital Pin 3: Right encoder A (White)
+Digital Pin 5: Right encoder B (Yellow)
 Digital Pin 3: Right encoder
-Motor shield M3: Left motor
-Motor shield M4: Right motor
+Motor shield M3: Left motor (Red -> M3, Green -> Gnd)
+Motor shield M4: Right motor (Green -> M4, Red -> Gnd)
 Digital Pin 7 (Black): Button
 Digital Pin 8 (Red): Reset
 Digital Pin 9 (Black): LED
 
 SDA (Yellow)/SCL (Green): IMU
 +5V, GND, VIN jumper, VIN: Arduino power
+
+Encoder blue: 5V
+Encoder black: GND
+
+Ultrasonic Echo: 10
+Ultrasonic Trig: 11
+Connect Ultrasonic VCC & GND
 */
 
 #include <Wire.h>
 #include <Adafruit_MotorShield.h>
 #include "utility/Adafruit_MS_PWMServoDriver.h"
 #include <Adafruit_BNO055.h>
+#include <HCSR04.h>
+
 
 // Constants
 const float TICKS_PER_CM = 12.6; // TICKS
@@ -102,6 +111,7 @@ void loop() {
 /* Main code */
 
 /* Localization code */
+UltraSonicDistanceSensor hc(11, 10); // Use measureDistanceCm()
 volatile int lTicks = 0;
 volatile int rTicks = 0;
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
