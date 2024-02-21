@@ -25,7 +25,6 @@ Connect Ultrasonic VCC & GND
 #include "utility/Adafruit_MS_PWMServoDriver.h"
 #include <Adafruit_BNO055.h>
 #include <HCSR04.h>
-#include <SimpleKalmanFilter.h>
 
 
 // Constants
@@ -115,7 +114,6 @@ void loop() {
 
 /* Localization code */
 UltraSonicDistanceSensor hc(11, 10); // Use measureDistanceCm()
-SimpleKalmanFilter hcKf = SimpleKalmanFilter(0.05, 0.05, 0.01);
 
 volatile int lTicks = 0;
 volatile int rTicks = 0;
@@ -308,22 +306,23 @@ void loopPid() {
   }
   if (pathPoint == pathlen()-1 && WALLEN && abs(targetErr) < PI/12) { // Error <15deg
     float rawDist = hc.measureDistanceCm();
-    rawDist = hcKf.updateEstimate(rawDist);
     float dist = cos(targetErr) * rawDist; // Account for heading error
-    digitalWrite(9, 0);
-    if (WALLYAXIS) {
-      if (path[pathPoint].x > path[pathPoint-1].x) {
-        x = WALLPOS - dist;
-        Serial.println(x);
-        Serial.println(dist);
+    if (dist > 0) { // Check value
+      digitalWrite(9, 0);
+      if (WALLYAXIS) {
+        if (path[pathPoint].x > path[pathPoint-1].x) {
+          x = WALLPOS - dist;
+          Serial.println(x);
+          Serial.println(dist);
+        } else {
+          x = WALLPOS + dist;
+        }
       } else {
-        x = WALLPOS + dist;
-      }
-    } else {
-      if (path[pathPoint].y > path[pathPoint-1].y) {
-        y = WALLPOS - dist;
-      } else {
-        y = WALLPOS + dist;
+        if (path[pathPoint].y > path[pathPoint-1].y) {
+          y = WALLPOS - dist;
+        } else {
+          y = WALLPOS + dist;
+        }
       }
     }
   } else {
