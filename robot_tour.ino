@@ -25,6 +25,7 @@ Connect Ultrasonic VCC & GND
 #include "utility/Adafruit_MS_PWMServoDriver.h"
 #include <Adafruit_BNO055.h>
 #include <HCSR04.h>
+#include <SimpleKalmanFilter.h>
 
 
 // Constants
@@ -42,8 +43,9 @@ const float DEADBAND = 30;
 // Path
 const float START_HEADING = PI; // RADIANS
 const float TIME = 60; // SECONDS
-const float WALLDIST = 25; // CM, use a value of 0 to disable this, negative means that it should be down/left
+const float WALLPOS = 0; // X or Y-coordinate of wall
 const float WALLYAXIS = true; // if true, the wall goes up and down on the y axis, robot approaches along x axis
+const float WALLEN = true;
 typedef struct Point {
   float x; // CM
   float y; // CM
@@ -68,7 +70,7 @@ Point path[] = {
   {-75, 25},
   // GO THROUGH GATE 3
   {-75, 75},
-  {-30, 75} // 5cm left because the dowel is 5cm ahead of center
+  {-25, 75}
 };
 float ptdist(Point a, Point b) {
   float ex = a.x - b.x;
@@ -113,6 +115,8 @@ void loop() {
 
 /* Localization code */
 UltraSonicDistanceSensor hc(11, 10); // Use measureDistanceCm()
+SimpleKalmanFilter hcKf = SimpleKalmanFilter(0.05, 0.05, 0.01);
+
 volatile int lTicks = 0;
 volatile int rTicks = 0;
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
@@ -290,38 +294,62 @@ void resetPid() {
 void loopPid() {
   Point goal = path[pathPoint];
 
+  // Use distance sensor if last point
+  float targetHeading = START_HEADING;
+  if (pathPoint > 0) {
+    targetHeading = atan2((double)(path[pathPoint].y - path[pathPoint-1].y), (double)(path[pathPoint].x - path[pathPoint-1].x));
+  }
+  float targetErr = targetHeading - heading;
+  while (targetErr > PI) {
+    targetErr -= 2*PI;
+  }
+  while (targetErr < (-1 * PI)) {
+    targetErr += 2*PI;
+  }
+  if (pathPoint == pathlen()-1 && WALLEN && abs(targetErr) < PI/12) { // Error <15deg
+    float rawDist = hc.measureDistanceCm();
+    rawDist = hcKf.updateEstimate(rawDist);
+    float dist = cos(targetErr) * rawDist; // Account for heading error
+    digitalWrite(9, 0);
+    if (WALLYAXIS) {
+      if (path[pathPoint].x > path[pathPoint-1].x) {
+        x = WALLPOS - dist;
+        Serial.println(x);
+        Serial.println(dist);
+      } else {
+        x = WALLPOS + dist;
+      }
+    } else {
+      if (path[pathPoint].y > path[pathPoint-1].y) {
+        y = WALLPOS - dist;
+      } else {
+        y = WALLPOS + dist;
+      }
+    }
+  } else {
+    digitalWrite(9, 1);
+  }
+
   // Calculate errors
   float ex = goal.x - x;
   float ey = goal.y - y;
   float err = atan2((double)(ey), (double)(ex)) - heading;
-  if (err > PI) {
+  while (err > PI) {
     err -= 2*PI;
-  } else if (err < -1 * PI) {
+  }
+  while (err < (-1 * PI)) {
     err += 2*PI;
   }
 
-  // Use distance sensor if last point
-  if (pathPoint == pathlen()-2 && WALLDIST != 0 && abs(err) < PI/24) { // Error <15deg
-    float rawDist = hc.measureDistanceCm();
-    float dist = cos(err) * dist; // Account for heading error
-    if (WALLDIST < 0) {
-      dist *= -1;
-    }
-    if (WALLYAXIS) {
-      ex = dist - WALLDIST;
-    } else {
-      ey = dist - WALLDIST;
-    }
-  }
-
   // Check if ready for next point
-  int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 2; // Allow room to turn for early points
+  int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 1; // Allow room to turn for early points
   if (abs(ex) < maxerr && abs(ey) < maxerr) { // Check if next point
     if (pathPoint < pathlen()-1) {
       pathPoint++;
       iV = 0; // Stop integral windup
       return;
     } else {
+      Serial.println(ex);
       digitalWrite(9, LOW);
       powerMotors(0, 0);
       delay(300);
@@ -361,9 +389,9 @@ void loopPid() {
   Serial.print(",atan:");
   Serial.print(atan2((double)(goal.y - y), (double)(goal.x - x)));
   Serial.print(",ey:");
-  Serial.print(goal.y - y);
+  Serial.print(ey);
   Serial.print(",ex:");
-  Serial.print(goal.x - x);
+  Serial.print(ex);
   Serial.print(",vel:");
   Serial.print(vel);
   Serial.print(",w:");
