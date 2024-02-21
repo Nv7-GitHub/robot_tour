@@ -3,7 +3,6 @@ Digital Pin 2: Left encoder A (White)
 Digital Pin 4: Left encoder B (Yellow)
 Digital Pin 3: Right encoder A (White)
 Digital Pin 5: Right encoder B (Yellow)
-Digital Pin 3: Right encoder
 Motor shield M3: Left motor (Red -> M3, Green -> Gnd)
 Motor shield M4: Right motor (Green -> M4, Red -> Gnd)
 Digital Pin 7 (Black): Button
@@ -43,6 +42,8 @@ const float DEADBAND = 30;
 // Path
 const float START_HEADING = PI; // RADIANS
 const float TIME = 60; // SECONDS
+const float WALLDIST = 25; // CM, use a value of 0 to disable this, negative means that it should be down/left
+const float WALLYAXIS = true; // if true, the wall goes up and down on the y axis, robot approaches along x axis
 typedef struct Point {
   float x; // CM
   float y; // CM
@@ -288,8 +289,34 @@ void resetPid() {
 
 void loopPid() {
   Point goal = path[pathPoint];
-  int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 4; // Allow room to turn for early points
-  if (abs(goal.x - x) < maxerr && abs(goal.y - y) < maxerr) { // Check if next point
+
+  // Calculate errors
+  float ex = goal.x - x;
+  float ey = goal.y - y;
+  float err = atan2((double)(ey), (double)(ex)) - heading;
+  if (err > PI) {
+    err -= 2*PI;
+  } else if (err < -1 * PI) {
+    err += 2*PI;
+  }
+
+  // Use distance sensor if last point
+  if (pathPoint == pathlen()-2 && WALLDIST != 0 && abs(err) < PI/24) { // Error <15deg
+    float rawDist = hc.measureDistanceCm();
+    float dist = cos(err) * dist; // Account for heading error
+    if (WALLDIST < 0) {
+      dist *= -1;
+    }
+    if (WALLYAXIS) {
+      ex = dist - WALLDIST;
+    } else {
+      ey = dist - WALLDIST;
+    }
+  }
+
+  // Check if ready for next point
+  int maxerr = pathPoint < pathlen()-1 ? TRACK_WIDTH : 2; // Allow room to turn for early points
+  if (abs(ex) < maxerr && abs(ey) < maxerr) { // Check if next point
     if (pathPoint < pathlen()-1) {
       pathPoint++;
       iV = 0; // Stop integral windup
@@ -302,15 +329,6 @@ void loopPid() {
       waitForStart();
       return;
     }
-  }
-
-  float ex = goal.x - x;
-  float ey = goal.y - y;
-  float err = atan2((double)(ey), (double)(ex)) - heading;
-  if (err > PI) {
-    err -= 2*PI;
-  } else if (err < -1 * PI) {
-    err += 2*PI;
   }
 
   // Turn in place
