@@ -40,7 +40,7 @@ const float MAXANG = 25; // Max w value
 const float DEADBAND = 30;
 
 // Path
-const float START_HEADING = PI; // RADIANS
+const float START_HEADING = PI/2; // RADIANS
 const float TIME = 60; // SECONDS
 const float WALLPOS = 0; // X or Y-coordinate of wall
 const float WALLYAXIS = true; // if true, the wall goes up and down on the y axis, robot approaches along x axis
@@ -50,26 +50,28 @@ typedef struct Point {
   float y; // CM
 } Point;
 Point path[] = {
-  {100, -75},
+  {75, -100},
+  {75, -75},
   {25, -75},
   {25, -25},
-  {75, -25},
-  // GO THROUGH GATE 1
-  {75, 75},
-  {25, 75},
-  {25, 25},
-  {-25, 25},
-  {-25, -25},
   {-75, -25},
   {-75, -75},
-  // GO THROUGH GATE 2
-  {-74, -25},
-  {-25, -25},
+  {-25, -75}, // GATE 1
+  {-75, -75},
+  {-75, -25},
+  {25, -25},
+  {25, -75},
+  {75, -75}, // BACK TO START
+  {75, 75},
+  {25, 75}, // GATE 2
+  {25, 25},
   {-25, 25},
-  {-75, 25},
-  // GO THROUGH GATE 3
+  {-25, 75}, // PASS THROUGH END
+  {-75, 75},
+  {-75, 25}, // GATE 3
   {-75, 75},
   {-25, 75}
+
 };
 float ptdist(Point a, Point b) {
   float ex = a.x - b.x;
@@ -391,6 +393,10 @@ void loopPid() {
   Serial.print(ey);
   Serial.print(",ex:");
   Serial.print(ex);
+  Serial.print(",y:");
+  Serial.print(y);
+  Serial.print(",x:");
+  Serial.print(x);
   Serial.print(",vel:");
   Serial.print(vel);
   Serial.print(",w:");
