@@ -22,13 +22,15 @@ Connect Ultrasonic VCC & GND
 
 #include <Wire.h>
 #include <Adafruit_MotorShield.h>
-#include "utility/Adafruit_MS_PWMServoDriver.h"
-#include <Adafruit_BNO055.h>
 #include <HCSR04.h>
+
+#include <MPU6050_6Axis_MotionApps20.h>
+#include <Wire.h>
+#include <I2Cdev.h>
 
 
 // Constants
-const float TICKS_PER_CM = 12.6; // TICKS
+const float TICKS_PER_CM = 11.4; // TICKS
 const float TRACK_WIDTH = 16; // CM
 const float SPEED = 45;
 const float P = 35;
@@ -90,12 +92,13 @@ void setup() {
   pinMode(7, INPUT_PULLUP);
   pinMode(8, INPUT_PULLUP);
   pinMode(9, OUTPUT);
+  digitalWrite(9, HIGH);
 
   Serial.begin(9600);
 
   setupMotors();
-  setupLocalization();
   setupPid();
+  setupLocalization();
   waitForStart();
 }
 
@@ -119,12 +122,31 @@ UltraSonicDistanceSensor hc(11, 10); // Use measureDistanceCm()
 
 volatile int lTicks = 0;
 volatile int rTicks = 0;
-Adafruit_BNO055 bno = Adafruit_BNO055(55);
+MPU6050 mpu;
 void setupLocalization() {
   attachInterrupt(0, incrementL, RISING);
   attachInterrupt(1, incrementR, RISING);
-  bno.begin();
-  bno.setExtCrystalUse(true);
+
+  Wire.begin();
+  mpu.initialize();
+  mpu.dmpInitialize();
+  digitalWrite(9, LOW);
+  mpu.CalibrateGyro(60);
+  mpu.setDMPEnabled(true);
+}
+
+uint8_t fifoBuffer[64];
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+float getYaw() {
+  if (!mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
+    Serial.println("IMU FAIL");
+  }
+  mpu.dmpGetQuaternion(&q, fifoBuffer);
+  mpu.dmpGetGravity(&gravity, &q);
+  mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+  return ypr[0];
 }
 
 void incrementL() {
@@ -154,8 +176,7 @@ void resetLocalization() {
   heading = START_HEADING;
   vel = 0;
 
-  imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-  float offset = 2*PI - euler.x() * DEG_TO_RAD;
+  float offset = 2*PI - getYaw();
   startHeading = START_HEADING - offset;
   prevHeading = START_HEADING;
   lTicks = 0;
@@ -177,8 +198,7 @@ void loopLocalization() {
   /*float dHeading = (r - l)/TRACK_WIDTH; // Encoder-based orientation
   heading += dHeading;*/
 
-  imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER); // IMU-based orientation
-  heading = fmod(2*PI - euler.x() * DEG_TO_RAD + startHeading, 2*PI);
+  heading = fmod(2*PI - getYaw() + startHeading, 2*PI);
   float dHeading = heading - prevHeading;
   prevHeading = heading;
   if (dHeading == 0) {
@@ -310,7 +330,7 @@ void loopPid() {
     float rawDist = hc.measureDistanceCm();
     float dist = cos(targetErr) * rawDist; // Account for heading error
     if (dist > 0) { // Check value
-      digitalWrite(9, 0);
+      digitalWrite(9, LOW);
       if (WALLYAXIS) {
         if (path[pathPoint].x > path[pathPoint-1].x) {
           x = WALLPOS - dist;
@@ -328,7 +348,7 @@ void loopPid() {
       }
     }
   } else {
-    digitalWrite(9, 1);
+    digitalWrite(9, HIGH);
   }
 
   // Calculate errors
