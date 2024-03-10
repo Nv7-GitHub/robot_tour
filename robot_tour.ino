@@ -9,7 +9,8 @@ Digital Pin 7 (Black): Button
 Digital Pin 8 (Red): Reset
 Digital Pin 9 (Black): LED
 
-SDA (Yellow)/SCL (Green): IMU
+SDA (Yellow)/SCL (Green): IMU I2C
+Digital Pin 13 (Blue): IMU INT
 +5V, GND, VIN jumper, VIN: Arduino power
 
 Encoder blue: 5V
@@ -18,22 +19,25 @@ Encoder black: GND
 Ultrasonic Echo: 10
 Ultrasonic Trig: 11
 Connect Ultrasonic VCC & GND
+
+NOTE: NEED TO CALIBRATE ONCE OR ELSE IT WON'T WORK, USE THIS CODE: https://github.com/sparkfun/SparkFun_BNO080_Arduino_Library/blob/main/examples/Example9-Calibrate/Example9-Calibrate.ino
+Change begin() method to be like it is in this program
 */
 
 #include <Wire.h>
 #include <Adafruit_MotorShield.h>
 #include "utility/Adafruit_MS_PWMServoDriver.h"
-#include <Adafruit_BNO055.h>
+#include <SparkFun_BNO080_Arduino_Library.h>
 #include <HCSR04.h>
 
 
 // Constants
-const float TICKS_PER_CM = 12.6; // TICKS
-const float TRACK_WIDTH = 16; // CM
+const float TICKS_PER_CM = 13.65; // TICKS
+const float TRACK_WIDTH = 13.8; // CM
 const float SPEED = 45;
-const float P = 35;
+const float P = 25;
 const float I = 0;
-const float D = 15;
+const float D = 7;
 const float VEL_P = 0.1;
 
 const float MAXANG = 25; // Max w value
@@ -119,12 +123,14 @@ UltraSonicDistanceSensor hc(11, 10); // Use measureDistanceCm()
 
 volatile int lTicks = 0;
 volatile int rTicks = 0;
-Adafruit_BNO055 bno = Adafruit_BNO055(55);
+BNO080 bno;
 void setupLocalization() {
   attachInterrupt(0, incrementL, RISING);
   attachInterrupt(1, incrementR, RISING);
-  bno.begin();
-  bno.setExtCrystalUse(true);
+  Wire.begin();
+  bno.begin(0x4A, Wire, 13);
+  Wire.setClock(400000);
+  bno.enableGyroIntegratedRotationVector(1);
 }
 
 void incrementL() {
@@ -148,14 +154,15 @@ void incrementR() {
 unsigned long lastTime;
 float startHeading;
 float prevHeading = heading;
+
 void resetLocalization() {
   x = path[0].x;
   y = path[0].y;
   heading = START_HEADING;
   vel = 0;
 
-  imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
-  float offset = 2*PI - euler.x() * DEG_TO_RAD;
+  while (!bno.dataAvailable()) {delay(1);} // Wait for data
+  float offset = bno.getYaw();
   startHeading = START_HEADING - offset;
   prevHeading = START_HEADING;
   lTicks = 0;
@@ -177,8 +184,10 @@ void loopLocalization() {
   /*float dHeading = (r - l)/TRACK_WIDTH; // Encoder-based orientation
   heading += dHeading;*/
 
-  imu::Vector<3> euler = bno.getVector(Adafruit_BNO055::VECTOR_EULER); // IMU-based orientation
-  heading = fmod(2*PI - euler.x() * DEG_TO_RAD + startHeading, 2*PI);
+  if (bno.dataAvailable()) {
+    Serial.println(bno.getYaw());
+  }
+  heading = fmod(bno.getYaw() + startHeading, 2*PI); 
   float dHeading = heading - prevHeading;
   prevHeading = heading;
   if (dHeading == 0) {
