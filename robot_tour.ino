@@ -28,23 +28,29 @@ Connect Ultrasonic VCC & GND
 
 
 // Constants
-const float TICKS_PER_CM = 12.6; // TICKS
+const float TICKS_PER_CM = 13.6; // TICKS
 const float TRACK_WIDTH = 16; // CM
 const float SPEED = 45;
 const float P = 35;
 const float I = 0;
-const float D = 15;
+const float D = 12;
 const float VEL_P = 0.1;
 
 const float MAXANG = 25; // Max w value
 const float DEADBAND = 30;
 
+// Walls
+const float WALLXPOS = 0; // This wall goes up-and-down on y axis and robot approaches on x axis
+const float WALLYPOS = 50; // This wall goes horizontal and robot approaches on y axis
+const int WALLXPOINT = 20;
+const int WALLYPOINT = 18;
+const bool WALLXEN = true;
+const bool WALLYEN = true;
+const float ULTRASONIC_OFFSET = 3.4; // Offset of ultrasonic sensor from centerpoint of the wheels
+
 // Path
 const float START_HEADING = PI/2; // RADIANS
 const float TIME = 60; // SECONDS
-const float WALLPOS = 0; // X or Y-coordinate of wall
-const float WALLYAXIS = true; // if true, the wall goes up and down on the y axis, robot approaches along x axis
-const float WALLEN = true;
 typedef struct Point {
   float x; // CM
   float y; // CM
@@ -70,8 +76,7 @@ Point path[] = {
   {-75, 75},
   {-75, 25}, // GATE 3
   {-75, 75},
-  {-25, 75}
-
+  {-25 - ULTRASONIC_OFFSET, 75} // Subtract ultrasonic offset so that it ends in right spot
 };
 float ptdist(Point a, Point b) {
   float ex = a.x - b.x;
@@ -306,25 +311,26 @@ void loopPid() {
   while (targetErr < (-1 * PI)) {
     targetErr += 2*PI;
   }
-  if (pathPoint == pathlen()-1 && WALLEN && abs(targetErr) < PI/12) { // Error <15deg
+  if (pathPoint == WALLXPOINT && WALLXEN && abs(targetErr) < PI/12) { // Error <15deg
     float rawDist = hc.measureDistanceCm();
-    float dist = cos(targetErr) * rawDist; // Account for heading error
+    float dist = cos(targetErr) * rawDist + ULTRASONIC_OFFSET; // Account for heading error
     if (dist > 0) { // Check value
       digitalWrite(9, 0);
-      if (WALLYAXIS) {
-        if (path[pathPoint].x > path[pathPoint-1].x) {
-          x = WALLPOS - dist;
-          Serial.println(x);
-          Serial.println(dist);
-        } else {
-          x = WALLPOS + dist;
-        }
+      if (path[pathPoint].x > path[pathPoint-1].x) {
+        x = WALLXPOS - dist;
       } else {
-        if (path[pathPoint].y > path[pathPoint-1].y) {
-          y = WALLPOS - dist;
-        } else {
-          y = WALLPOS + dist;
-        }
+        x = WALLXPOS + dist;
+      }
+    }
+  } else if (pathPoint == WALLYPOINT && WALLYEN && abs(targetErr) < PI/12) {
+    float rawDist = hc.measureDistanceCm();
+    float dist = cos(targetErr) * rawDist + ULTRASONIC_OFFSET; // Account for heading error
+    if (dist > 0) { // Check value
+      digitalWrite(9, 0);
+      if (path[pathPoint].y > path[pathPoint-1].y) {
+        y = WALLYPOS - dist;
+      } else {
+        y = WALLYPOS + dist;
       }
     }
   } else {
