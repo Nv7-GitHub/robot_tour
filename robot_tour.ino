@@ -28,11 +28,11 @@ Connect Ultrasonic VCC & GND
 
 
 // Constants
-const float TICKS_PER_CM = 13.6; // TICKS
-const float TRACK_WIDTH = 16; // CM
+const float TICKS_PER_CM = 13.6; // TICKS, bigger = goes further
+const float TRACK_WIDTH = 14; // CM
 const float SPEED = 45;
 const float P = 35;
-const float I = 0;
+const float I = 3;
 const float D = 12;
 const float VEL_P = 0.1;
 
@@ -40,13 +40,13 @@ const float MAXANG = 25; // Max w value
 const float DEADBAND = 30;
 
 // Walls
-const float WALLXPOS = 0; // This wall goes up-and-down on y axis and robot approaches on x axis
-const float WALLYPOS = 50; // This wall goes horizontal and robot approaches on y axis
+const float WALLXPOS = 2; // This wall goes up-and-down on y axis and robot approaches on x axis
+const float WALLYPOS = 3; // This wall goes horizontal and robot approaches on y axis
 const int WALLXPOINT = 20;
 const int WALLYPOINT = 18;
 const bool WALLXEN = true;
 const bool WALLYEN = true;
-const float ULTRASONIC_OFFSET = 3.4; // Offset of ultrasonic sensor from centerpoint of the wheels
+const float ULTRASONIC_OFFSET = 3; // Offset of ultrasonic sensor from centerpoint of the wheels
 
 // Path
 const float START_HEADING = PI/2; // RADIANS
@@ -56,7 +56,7 @@ typedef struct Point {
   float y; // CM
 } Point;
 Point path[] = {
-  {75, -100},
+  {75, -100 - ULTRASONIC_OFFSET},
   {75, -75},
   {25, -75},
   {25, -25},
@@ -274,6 +274,7 @@ int pathPoint = 0;
 float iV = 0;
 float pErr = 0; // Prev err
 bool turninplace = false;
+bool ending = false;
 float velOffset = 0;
 float targetVel = 0;
 
@@ -294,12 +295,13 @@ void resetPid() {
   pErr = 0;
   turninplace = false;
   velOffset = 0;
+  ending = false;
 }
 
 void loopPid() {
   Point goal = path[pathPoint];
 
-  // Use distance sensor if last point
+  // Calculate error from target heading
   float targetHeading = START_HEADING;
   if (pathPoint > 0) {
     targetHeading = atan2((double)(path[pathPoint].y - path[pathPoint-1].y), (double)(path[pathPoint].x - path[pathPoint-1].x));
@@ -311,6 +313,25 @@ void loopPid() {
   while (targetErr < (-1 * PI)) {
     targetErr += 2*PI;
   }
+
+  // Turn in place if ending
+  if (ending) {
+    if (abs(targetErr) > PI/180) {
+      float w = MAXANG/2 + DEADBAND;
+    if (targetErr < 0) {
+      w *= -1;
+    }
+      powerMotors(-w, w);
+    } else {
+      powerMotors(0, 0);
+      delay(100);
+      stopMotors();
+      waitForStart();
+    }
+    return;
+  }
+
+  // Use distance sensor if last point
   if (pathPoint == WALLXPOINT && WALLXEN && abs(targetErr) < PI/12) { // Error <15deg
     float rawDist = hc.measureDistanceCm();
     float dist = cos(targetErr) * rawDist + ULTRASONIC_OFFSET; // Account for heading error
@@ -356,12 +377,8 @@ void loopPid() {
       iV = 0; // Stop integral windup
       return;
     } else {
-      Serial.println(ex);
-      digitalWrite(9, LOW);
-      powerMotors(0, 0);
-      delay(300);
-      stopMotors();
-      waitForStart();
+      digitalWrite(9, HIGH);
+      ending = true;
       return;
     }
   }
@@ -391,7 +408,7 @@ void loopPid() {
     }
   }
 
-  Serial.print("heading:");
+  /*Serial.print("heading:");
   Serial.print(heading);
   Serial.print(",atan:");
   Serial.print(atan2((double)(goal.y - y), (double)(goal.x - x)));
@@ -410,7 +427,7 @@ void loopPid() {
   Serial.print(",voffset:");
   Serial.print(velOffset);
   Serial.print(",err:");
-  Serial.println(err);
+  Serial.println(err);*/
 
   if (turninplace) { // Turn in place until <90deg of error
     powerMotors(-w - (w > 0 ? DEADBAND : -DEADBAND), w + (w > 0 ? DEADBAND : -DEADBAND));
