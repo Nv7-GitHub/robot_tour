@@ -28,8 +28,8 @@ Connect Ultrasonic VCC & GND
 
 
 // Constants
-const float TICKS_PER_CM = 13.6; // TICKS, bigger = goes further
-const float TRACK_WIDTH = 14; // CM
+const float TICKS_PER_CM = 13.2; // TICKS, bigger = goes further
+const float TRACK_WIDTH = 13.65; // CM
 const float SPEED = 45;
 const float P = 35;
 const float I = 3;
@@ -41,7 +41,7 @@ const float DEADBAND = 30;
 
 // Walls
 const float WALLXPOS = 2; // This wall goes up-and-down on y axis and robot approaches on x axis
-const float WALLYPOS = 3; // This wall goes horizontal and robot approaches on y axis
+const float WALLYPOS = 0; // This wall goes horizontal and robot approaches on y axis
 const int WALLXPOINT = 20;
 const int WALLYPOINT = 18;
 const bool WALLXEN = true;
@@ -75,8 +75,8 @@ Point path[] = {
   {-25, 75}, // PASS THROUGH END
   {-75, 75},
   {-75, 25}, // GATE 3
-  {-75, 75},
-  {-25 - ULTRASONIC_OFFSET, 75} // Subtract ultrasonic offset so that it ends in right spot
+  {-75, 70},
+  {-25 - ULTRASONIC_OFFSET, 70} // Subtract ultrasonic offset so that it ends in right spot
 };
 float ptdist(Point a, Point b) {
   float ex = a.x - b.x;
